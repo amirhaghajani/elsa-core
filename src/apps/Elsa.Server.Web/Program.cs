@@ -4,6 +4,7 @@ using Elsa.Alterations.Extensions;
 using Elsa.Alterations.MassTransit.Extensions;
 using Elsa.Common.DistributedHosting.DistributedLocks;
 using Elsa.Common.RecurringTasks;
+using Elsa.Common.Serialization;
 using Elsa.Dapper.Extensions;
 using Elsa.Dapper.Services;
 using Elsa.DropIns.Extensions;
@@ -12,16 +13,19 @@ using Elsa.EntityFrameworkCore.Modules.Alterations;
 using Elsa.EntityFrameworkCore.Modules.Identity;
 using Elsa.EntityFrameworkCore.Modules.Management;
 using Elsa.EntityFrameworkCore.Modules.Runtime;
+using Elsa.EntityFrameworkCore.Modules.Tenants;
 using Elsa.Extensions;
 using Elsa.Features.Services;
 using Elsa.Identity.Multitenancy;
 using Elsa.Kafka;
+using Elsa.Kafka.Factories;
 using Elsa.MassTransit.Extensions;
 using Elsa.MongoDb.Extensions;
 using Elsa.MongoDb.Modules.Alterations;
 using Elsa.MongoDb.Modules.Identity;
 using Elsa.MongoDb.Modules.Management;
 using Elsa.MongoDb.Modules.Runtime;
+using Elsa.MongoDb.Modules.Tenants;
 using Elsa.OpenTelemetry.Middleware;
 using Elsa.Secrets.Extensions;
 using Elsa.Secrets.Management.Tasks;
@@ -30,14 +34,15 @@ using Elsa.Server.Web;
 using Elsa.Server.Web.Extensions;
 using Elsa.Server.Web.Filters;
 using Elsa.Server.Web.Messages;
-using Elsa.Server.Web.WorkflowContextProviders;
 using Elsa.Tenants.AspNetCore;
 using Elsa.Tenants.Extensions;
 using Elsa.Workflows.Api;
 using Elsa.Workflows.LogPersistence;
+using Elsa.Workflows.Management;
 using Elsa.Workflows.Management.Compression;
 using Elsa.Workflows.Management.Stores;
 using Elsa.Workflows.Runtime.Distributed.Extensions;
+using Elsa.Workflows.Runtime.Options;
 using Elsa.Workflows.Runtime.Stores;
 using Elsa.Workflows.Runtime.Tasks;
 using JetBrains.Annotations;
@@ -55,7 +60,6 @@ using StackExchange.Redis;
 
 // ReSharper disable RedundantAssignment
 const PersistenceProvider persistenceProvider = PersistenceProvider.EntityFrameworkCore;
-const SqlDatabaseProvider sqlDatabaseProvider = SqlDatabaseProvider.Sqlite;
 const bool useHangfire = false;
 const bool useQuartz = true;
 const bool useMassTransit = true;
@@ -67,12 +71,13 @@ const bool useAzureServiceBus = false;
 const bool useKafka = false;
 const bool useReadOnlyMode = false;
 const bool useSignalR = false; // Disabled until Elsa Studio sends authenticated requests.
-const WorkflowRuntime workflowRuntime = WorkflowRuntime.ProtoActor;
-const DistributedCachingTransport distributedCachingTransport = DistributedCachingTransport.ProtoActor;
+const WorkflowRuntime workflowRuntime = WorkflowRuntime.Distributed;
+const DistributedCachingTransport distributedCachingTransport = DistributedCachingTransport.MassTransit;
 const MassTransitBroker massTransitBroker = MassTransitBroker.Memory;
 const bool useMultitenancy = false;
+const bool useTenantsFromConfiguration = false;
 const bool useAgents = false;
-const bool useSecrets = true;
+const bool useSecrets = false;
 const bool disableVariableWrappers = false;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -91,6 +96,11 @@ var rabbitMqConnectionString = configuration.GetConnectionString("RabbitMq")!;
 var redisConnectionString = configuration.GetConnectionString("Redis")!;
 var distributedLockProviderName = configuration.GetSection("Runtime:DistributedLocking")["Provider"];
 var appRole = Enum.Parse<ApplicationRole>(configuration["AppRole"] ?? "Default");
+var sqlDatabaseProvider = Enum.Parse<SqlDatabaseProvider>(configuration["DatabaseProvider"] ?? "Sqlite");
+
+// Optionally create type aliases for easier configuration.
+TypeAliasRegistry.RegisterAlias("OrderReceivedProducerFactory", typeof(GenericProducerFactory<string, OrderReceived>));
+TypeAliasRegistry.RegisterAlias("OrderReceivedConsumerFactory", typeof(GenericConsumerFactory<string, OrderReceived>));
 
 // Add Elsa services.
 services
@@ -139,7 +149,7 @@ services
                             ef.UseSqlServer(sqlServerConnectionString!);
                         else if (sqlDatabaseProvider == SqlDatabaseProvider.PostgreSql)
                             ef.UsePostgreSql(postgresConnectionString!);
-                        else if(sqlDatabaseProvider == SqlDatabaseProvider.MySql)
+                        else if (sqlDatabaseProvider == SqlDatabaseProvider.MySql)
                             ef.UseMySql(mySqlConnectionString);
                         else if (sqlDatabaseProvider == SqlDatabaseProvider.CockroachDb)
                             ef.UsePostgreSql(cockroachDbConnectionString!);
@@ -173,7 +183,7 @@ services
                             ef.UseSqlServer(sqlServerConnectionString!);
                         else if (sqlDatabaseProvider == SqlDatabaseProvider.PostgreSql)
                             ef.UsePostgreSql(postgresConnectionString!);
-                        else if(sqlDatabaseProvider == SqlDatabaseProvider.MySql)
+                        else if (sqlDatabaseProvider == SqlDatabaseProvider.MySql)
                             ef.UseMySql(mySqlConnectionString);
                         else if (sqlDatabaseProvider == SqlDatabaseProvider.CockroachDb)
                             ef.UsePostgreSql(cockroachDbConnectionString!);
@@ -197,6 +207,7 @@ services
 
                 management.SetDefaultLogPersistenceMode(LogPersistenceMode.Inherit);
                 management.UseReadOnlyMode(useReadOnlyMode);
+                management.AddVariableTypeAndAlias<OrderReceived>("Application");
             })
             .UseProtoActor(proto =>
             {
@@ -243,7 +254,7 @@ services
                         }
                         else if (sqlDatabaseProvider == SqlDatabaseProvider.PostgreSql)
                             ef.UsePostgreSql(postgresConnectionString!);
-                        else if(sqlDatabaseProvider == SqlDatabaseProvider.MySql)
+                        else if (sqlDatabaseProvider == SqlDatabaseProvider.MySql)
                             ef.UseMySql(mySqlConnectionString);
                         else if (sqlDatabaseProvider == SqlDatabaseProvider.CockroachDb)
                             ef.UsePostgreSql(cockroachDbConnectionString!);
@@ -326,6 +337,7 @@ services
             {
                 options.AllowClrAccess = true;
                 options.DisableWrappers = disableVariableWrappers;
+                options.RegisterType<OrderReceived>();
                 options.ConfigureEngine(engine =>
                 {
                     engine.Execute("function greet(name) { return `Hello ${name}!`; }");
@@ -368,7 +380,7 @@ services
                             ef.UseSqlServer(sqlServerConnectionString);
                         else if (sqlDatabaseProvider == SqlDatabaseProvider.PostgreSql)
                             ef.UsePostgreSql(postgresConnectionString);
-                        else if(sqlDatabaseProvider == SqlDatabaseProvider.MySql)
+                        else if (sqlDatabaseProvider == SqlDatabaseProvider.MySql)
                             ef.UseMySql(mySqlConnectionString);
                         else if (sqlDatabaseProvider == SqlDatabaseProvider.CockroachDb)
                             ef.UsePostgreSql(cockroachDbConnectionString!);
@@ -425,8 +437,6 @@ services
                         // etc.
                     });
                 }
-
-                massTransit.AddMessageType<OrderReceived>();
             });
         }
 
@@ -446,15 +456,13 @@ services
                 asb.AzureServiceBusOptions = options => configuration.GetSection("AzureServiceBus").Bind(options);
             });
         }
-        
-        if(useKafka)
+
+        if (useKafka)
         {
             elsa.UseKafka(kafka =>
             {
                 kafka.ConfigureOptions(options => configuration.GetSection("Kafka").Bind(options));
             });
-
-            services.AddWorkflowContextProvider<ConsumerDefinitionWorkflowContextProvider>();
         }
 
         if (useAgents)
@@ -464,10 +472,10 @@ services
                 .UseAgentPersistence(persistence => persistence.UseEntityFrameworkCore(ef => ef.UseSqlite(sp => sp.GetSqliteConnectionString())))
                 .UseAgentsApi()
                 ;
-            
+
             services.Configure<AgentsOptions>(options => builder.Configuration.GetSection("Agents").Bind(options));
         }
-        
+
         if (useSecrets)
         {
             elsa
@@ -478,11 +486,11 @@ services
                     if (sqlDatabaseProvider == SqlDatabaseProvider.PostgreSql)
                         management.UseEntityFrameworkCore(ef =>
                             ef.UseSqlServer(sqlServerConnectionString)
-                            );
+                        );
                     else if (sqlDatabaseProvider == SqlDatabaseProvider.PostgreSql)
-                        management.UseEntityFrameworkCore(ef => 
+                        management.UseEntityFrameworkCore(ef =>
                             ef.UsePostgreSql(postgresConnectionString)
-                            );
+                        );
                     else
                         management.UseEntityFrameworkCore(ef =>
                         {
@@ -498,16 +506,44 @@ services
         {
             elsa.UseTenants(tenants =>
             {
-                tenants.ConfigureOptions(options =>
+                tenants.ConfigureMultitenancy(options =>
                 {
-                    configuration.GetSection("Multitenancy").Bind(options);
                     options.TenantResolverPipelineBuilder
                         .Append<HostTenantResolver>()
                         .Append<RoutePrefixTenantResolver>()
                         .Append<HeaderTenantResolver>()
                         .Append<ClaimsTenantResolver>();
                 });
-                tenants.UseConfigurationBasedTenantsProvider();
+
+                if (useTenantsFromConfiguration)
+                {
+                    tenants.UseConfigurationBasedTenantsProvider(options => configuration.GetSection("Multitenancy").Bind(options));
+                }
+                else
+                {
+                    tenants.UseStoreBasedTenantsProvider();
+                    
+                    tenants.UseTenantManagement(management =>
+                    {
+                        if (persistenceProvider == PersistenceProvider.MongoDb)
+                            management.UseMongoDb();
+                        if (persistenceProvider == PersistenceProvider.Dapper)
+                            throw new NotSupportedException("Dapper is not supported for tenant management.");
+                        if (persistenceProvider == PersistenceProvider.EntityFrameworkCore)
+                        {
+                            management.UseEntityFrameworkCore(ef =>
+                            {
+                                if (sqlDatabaseProvider == SqlDatabaseProvider.Sqlite) ef.UseSqlite(sqliteConnectionString);
+                                if (sqlDatabaseProvider == SqlDatabaseProvider.SqlServer) ef.UseSqlServer(sqlServerConnectionString);
+                                if (sqlDatabaseProvider == SqlDatabaseProvider.PostgreSql) ef.UsePostgreSql(postgresConnectionString);
+                                if (sqlDatabaseProvider == SqlDatabaseProvider.MySql) ef.UseMySql(mySqlConnectionString);
+                                if (sqlDatabaseProvider == SqlDatabaseProvider.CockroachDb) ef.UsePostgreSql(cockroachDbConnectionString);
+                            });
+                        }
+                    });
+                    
+                    tenants.UseTenantManagementEndpoints();
+                }
             });
 
             elsa.UseTenantHttpRouting();
@@ -525,10 +561,12 @@ services.AddActivityStateFilter<HttpRequestAuthenticationHeaderFilter>();
 // Optionally configure recurring tasks using alternative schedules.
 services.Configure<RecurringTaskOptions>(options =>
 {
-    options.Schedule.ConfigureTask<TriggerBookmarkQueueRecurringTask>(TimeSpan.FromSeconds(30));
+    options.Schedule.ConfigureTask<TriggerBookmarkQueueRecurringTask>(TimeSpan.FromSeconds(300));
+    options.Schedule.ConfigureTask<PurgeBookmarkQueueRecurringTask>(TimeSpan.FromSeconds(300));
     options.Schedule.ConfigureTask<UpdateExpiredSecretsRecurringTask>(TimeSpan.FromHours(4));
-    options.Schedule.ConfigureTask<PurgeBookmarkQueueRecurringTask>(TimeSpan.FromSeconds(60));
 });
+
+services.Configure<BookmarkQueuePurgeOptions>(options => options.Ttl = TimeSpan.FromSeconds(10));
 
 //services.Configure<CachingOptions>(options => options.CacheDuration = TimeSpan.FromDays(1));
 services.AddHealthChecks();
@@ -556,7 +594,7 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 // Multitenancy.
-if(useMultitenancy)
+if (useMultitenancy)
     app.UseTenants();
 
 // Elsa API endpoints for designer.

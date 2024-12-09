@@ -31,7 +31,6 @@ namespace Elsa.Workflows.Runtime.Features;
 /// Installs and configures workflow runtime features.
 /// </summary>
 [DependsOn(typeof(SystemClockFeature))]
-[DependsOn(typeof(BackgroundTasksFeature))]
 public class WorkflowRuntimeFeature : FeatureBase
 {
     /// <inheritdoc />
@@ -137,6 +136,11 @@ public class WorkflowRuntimeFeature : FeatureBase
     /// A delegate to configure the <see cref="WorkflowDispatcherOptions"/>.
     /// </summary>
     public Action<WorkflowDispatcherOptions> WorkflowDispatcherOptions { get; set; } = _ => { };
+    
+    /// <summary>
+    /// A delegate to configure the <see cref="BookmarkQueuePurgeOptions"/>.
+    /// </summary>
+    public Action<BookmarkQueuePurgeOptions> BookmarkQueuePurgeOptions { get; set; } = _ => { };
 
     /// <summary>
     /// Register the specified workflow type.
@@ -205,6 +209,7 @@ public class WorkflowRuntimeFeature : FeatureBase
         Services.Configure(DistributedLockingOptions);
         Services.Configure(WorkflowInboxCleanupOptions);
         Services.Configure(WorkflowDispatcherOptions);
+        Services.Configure(BookmarkQueuePurgeOptions);
         Services.Configure<RuntimeOptions>(options => { options.Workflows = Workflows; });
         Services.Configure<WorkflowDispatcherOptions>(options =>
         {
@@ -225,7 +230,7 @@ public class WorkflowRuntimeFeature : FeatureBase
             .AddScoped(WorkflowExecutionLogSink)
             .AddSingleton(BackgroundActivityScheduler)
             .AddSingleton<RandomLongIdentityGenerator>()
-            .AddScoped<IBookmarkQueueSignaler, BookmarkQueueSignaler>()
+            .AddSingleton<IBookmarkQueueSignaler, BookmarkQueueSignaler>()
             .AddScoped<IBookmarkQueueWorker, BookmarkQueueWorker>()
             .AddScoped<IBookmarkManager, DefaultBookmarkManager>()
             .AddScoped<IActivityExecutionManager, DefaultActivityExecutionManager>()
@@ -292,7 +297,7 @@ public class WorkflowRuntimeFeature : FeatureBase
             // Startup tasks, background tasks, and recurring tasks.
             .AddStartupTask<PopulateRegistriesStartupTask>()
             .AddRecurringTask<TriggerBookmarkQueueRecurringTask>(TimeSpan.FromMinutes(1))
-            .AddRecurringTask<PurgeBookmarkQueueRecurringTask>(TimeSpan.FromMinutes(1))
+            .AddRecurringTask<PurgeBookmarkQueueRecurringTask>(TimeSpan.FromSeconds(10))
 
             // Distributed locking.
             .AddSingleton(DistributedLockProvider)
@@ -300,13 +305,14 @@ public class WorkflowRuntimeFeature : FeatureBase
             // Workflow definition providers.
             .AddWorkflowDefinitionProvider<ClrWorkflowsProvider>()
             
-            // UI prooprty handlers.
+            // UI property handlers.
             .AddScoped<IPropertyUIHandler, DispatcherChannelOptionsProvider>()
 
             // Domain handlers.
             .AddCommandHandler<DispatchWorkflowCommandHandler>()
             .AddNotificationHandler<ResumeDispatchWorkflowActivity>()
             .AddNotificationHandler<ResumeBulkDispatchWorkflowActivity>()
+            .AddNotificationHandler<ResumeExecuteWorkflowActivity>()
             .AddNotificationHandler<IndexTriggers>()
             .AddNotificationHandler<CancelBackgroundActivities>()
             .AddNotificationHandler<DeleteBookmarks>()
