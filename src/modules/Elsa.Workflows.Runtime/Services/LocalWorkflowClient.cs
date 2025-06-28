@@ -4,6 +4,7 @@ using Elsa.Workflows.Management.Mappers;
 using Elsa.Workflows.Management.Options;
 using Elsa.Workflows.Models;
 using Elsa.Workflows.Options;
+using Elsa.Workflows.Runtime.Exceptions;
 using Elsa.Workflows.Runtime.Messages;
 using Elsa.Workflows.State;
 using Microsoft.Extensions.Logging;
@@ -29,60 +30,27 @@ public class LocalWorkflowClient(
     public async Task<CreateWorkflowInstanceResponse> CreateInstanceAsync(CreateWorkflowInstanceRequest request, CancellationToken cancellationToken = default)
     {
         var workflowDefinitionHandle = request.WorkflowDefinitionHandle;
-        var workflowGraph = await workflowDefinitionService.FindWorkflowGraphAsync(workflowDefinitionHandle, cancellationToken);
-        if (workflowGraph == null) throw new InvalidOperationException($"Workflow with version ID {workflowDefinitionHandle} not found.");
+        var workflowGraph = await GetWorkflowGraphAsync(workflowDefinitionHandle, cancellationToken);
 
         var options = new WorkflowInstanceOptions
         {
             WorkflowInstanceId = WorkflowInstanceId,
             CorrelationId = request.CorrelationId,
+            Name = request.Name,
             ParentWorkflowInstanceId = request.ParentId,
             Input = request.Input,
             Properties = request.Properties
         };
 
-        await workflowInstanceManager.CreateWorkflowInstanceAsync(workflowGraph.Workflow, options, cancellationToken);
-        return new CreateWorkflowInstanceResponse();
+        await workflowInstanceManager.CreateAndCommitWorkflowInstanceAsync(workflowGraph.Workflow, options, cancellationToken);
+        return new();
     }
 
     /// <inheritdoc />
     public async Task<RunWorkflowInstanceResponse> RunInstanceAsync(RunWorkflowInstanceRequest request, CancellationToken cancellationToken = default)
     {
         var workflowInstance = await GetWorkflowInstanceAsync(cancellationToken);
-        var workflowState = workflowInstance.WorkflowState;
-
-        if (workflowInstance.Status != WorkflowStatus.Running)
-        {
-            logger.LogWarning("Attempt to resume workflow {WorkflowInstanceId} that is not in the Running state. The actual state is {ActualWorkflowStatus}", workflowState.Id, workflowState.Status);
-            return new RunWorkflowInstanceResponse
-            {
-                WorkflowInstanceId = WorkflowInstanceId,
-                Status = workflowInstance.Status,
-                SubStatus = workflowInstance.SubStatus
-            };
-        }
-
-        var runWorkflowOptions = new RunWorkflowOptions
-        {
-            Input = request.Input,
-            Properties = request.Properties,
-            BookmarkId = request.BookmarkId,
-            TriggerActivityId = request.TriggerActivityId,
-            ActivityHandle = request.ActivityHandle,
-        };
-
-        var workflowGraph = await GetWorkflowGraphAsync(cancellationToken);
-        var workflowResult = await workflowRunner.RunAsync(workflowGraph, workflowState, runWorkflowOptions, cancellationToken);
-
-        workflowState = workflowResult.WorkflowState;
-
-        return new RunWorkflowInstanceResponse
-        {
-            WorkflowInstanceId = WorkflowInstanceId,
-            Status = workflowState.Status,
-            SubStatus = workflowState.SubStatus,
-            Incidents = workflowState.Incidents
-        };
+        return await RunInstanceAsync(workflowInstance, request, cancellationToken);
     }
 
     /// <inheritdoc />
@@ -92,17 +60,20 @@ public class LocalWorkflowClient(
         {
             Properties = request.Properties,
             CorrelationId = request.CorrelationId,
+            Name = request.Name,
             Input = request.Input,
             WorkflowDefinitionHandle = request.WorkflowDefinitionHandle,
             ParentId = request.ParentId
         };
-        await CreateInstanceAsync(createRequest, cancellationToken);
-        return await RunInstanceAsync(new RunWorkflowInstanceRequest
+        var workflowInstance = await CreateInstanceInternalAsync(createRequest, cancellationToken);
+        return await RunInstanceAsync(workflowInstance, new()
         {
             Input = request.Input,
+            Variables = request.Variables,
             Properties = request.Properties,
             TriggerActivityId = request.TriggerActivityId,
-            ActivityHandle = request.ActivityHandle
+            ActivityHandle = request.ActivityHandle,
+            IncludeWorkflowOutput = request.IncludeWorkflowOutput
         }, cancellationToken);
     }
 
@@ -111,7 +82,7 @@ public class LocalWorkflowClient(
     {
         var workflowInstance = await GetWorkflowInstanceAsync(cancellationToken);
         if (workflowInstance.Status != WorkflowStatus.Running) return;
-        var workflowGraph = await GetWorkflowGraphAsync(cancellationToken);
+        var workflowGraph = await GetWorkflowGraphAsync(workflowInstance, cancellationToken);
         var workflowState = await workflowCanceler.CancelWorkflowAsync(workflowGraph, workflowInstance.WorkflowState, cancellationToken);
         await workflowInstanceManager.SaveAsync(workflowState, cancellationToken);
     }
@@ -130,18 +101,86 @@ public class LocalWorkflowClient(
         await workflowInstanceManager.SaveAsync(workflowInstance, cancellationToken);
     }
 
+    public Task<bool> InstanceExistsAsync(CancellationToken cancellationToken = default)
+    {
+        return workflowInstanceManager.ExistsAsync(workflowInstanceId, cancellationToken);
+    }
+
+    public async Task<RunWorkflowInstanceResponse> RunInstanceAsync(WorkflowInstance workflowInstance, RunWorkflowInstanceRequest request, CancellationToken cancellationToken = default)
+    {
+        var workflowState = workflowInstance.WorkflowState;
+
+        if (workflowInstance.Status != WorkflowStatus.Running)
+        {
+            logger.LogWarning("Attempt to resume workflow {WorkflowInstanceId} that is not in the Running state. The actual state is {ActualWorkflowStatus}", workflowState.Id, workflowState.Status);
+            return new()
+            {
+                WorkflowInstanceId = WorkflowInstanceId,
+                Status = workflowInstance.Status,
+                SubStatus = workflowInstance.SubStatus
+            };
+        }
+
+        var runWorkflowOptions = new RunWorkflowOptions
+        {
+            Input = request.Input,
+            Variables = request.Variables,
+            Properties = request.Properties,
+            BookmarkId = request.BookmarkId,
+            TriggerActivityId = request.TriggerActivityId,
+            ActivityHandle = request.ActivityHandle,
+        };
+
+        var workflowGraph = await GetWorkflowGraphAsync(workflowInstance, cancellationToken);
+        var workflowResult = await workflowRunner.RunAsync(workflowGraph, workflowState, runWorkflowOptions, cancellationToken);
+
+        workflowState = workflowResult.WorkflowState;
+
+        return new()
+        {
+            WorkflowInstanceId = WorkflowInstanceId,
+            Status = workflowState.Status,
+            SubStatus = workflowState.SubStatus,
+            Incidents = workflowState.Incidents,
+            Output = request.IncludeWorkflowOutput ? new Dictionary<string, object>(workflowState.Output) : null
+        };
+    }
+    
+    public async Task<WorkflowInstance> CreateInstanceInternalAsync(CreateWorkflowInstanceRequest request, CancellationToken cancellationToken = default)
+    {
+        var workflowDefinitionHandle = request.WorkflowDefinitionHandle;
+        var workflowGraph = await GetWorkflowGraphAsync(workflowDefinitionHandle, cancellationToken);
+
+        var options = new WorkflowInstanceOptions
+        {
+            WorkflowInstanceId = WorkflowInstanceId,
+            CorrelationId = request.CorrelationId,
+            Name = request.Name,
+            ParentWorkflowInstanceId = request.ParentId,
+            Input = request.Input,
+            Properties = request.Properties
+        };
+
+        return workflowInstanceManager.CreateWorkflowInstance(workflowGraph.Workflow, options);
+    }
+
     private async Task<WorkflowInstance> GetWorkflowInstanceAsync(CancellationToken cancellationToken)
     {
         var workflowInstance = await workflowInstanceManager.FindByIdAsync(WorkflowInstanceId, cancellationToken);
-        if (workflowInstance == null) throw new InvalidOperationException($"Workflow instance {WorkflowInstanceId} not found.");
+        if (workflowInstance == null) throw new WorkflowInstanceNotFoundException($"Workflow instance not found.", WorkflowInstanceId);
         return workflowInstance;
     }
 
-    private async Task<WorkflowGraph> GetWorkflowGraphAsync(CancellationToken cancellationToken)
+    private async Task<WorkflowGraph> GetWorkflowGraphAsync(WorkflowInstance workflowInstance, CancellationToken cancellationToken)
     {
-        var workflowInstance = await GetWorkflowInstanceAsync(cancellationToken);
-        var workflowGraph = await workflowDefinitionService.FindWorkflowGraphAsync(workflowInstance.DefinitionVersionId, cancellationToken);
-        if (workflowGraph == null) throw new InvalidOperationException($"Workflow graph with version ID {workflowInstance.DefinitionVersionId} not found.");
+        var handle = WorkflowDefinitionHandle.ByDefinitionVersionId(workflowInstance.DefinitionVersionId);
+        return await GetWorkflowGraphAsync(handle, cancellationToken);
+    }
+
+    private async Task<WorkflowGraph> GetWorkflowGraphAsync(WorkflowDefinitionHandle definitionHandle, CancellationToken cancellationToken)
+    {
+        var workflowGraph = await workflowDefinitionService.FindWorkflowGraphAsync(definitionHandle, cancellationToken);
+        if (workflowGraph == null) throw new WorkflowGraphNotFoundException($"Workflow graph not found.", definitionHandle);
         return workflowGraph;
     }
 }

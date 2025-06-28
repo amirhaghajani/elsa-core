@@ -180,7 +180,9 @@ public class StimulusProxyWorkflowInbox(
             response.Status,
             response.SubStatus,
             new List<Bookmark>(),
-            response.Incidents)
+            response.Incidents,
+            null,
+            null)
         );
     }
 }

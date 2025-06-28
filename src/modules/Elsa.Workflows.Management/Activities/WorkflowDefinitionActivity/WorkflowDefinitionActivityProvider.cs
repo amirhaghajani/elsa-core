@@ -73,7 +73,7 @@ public class WorkflowDefinitionActivityProvider(IWorkflowDefinitionStore store, 
 
         ports.Insert(0, rootPort);
 
-        return new ActivityDescriptor
+        return new()
         {
             TypeName = typeName,
             Name = typeName,
@@ -109,11 +109,6 @@ public class WorkflowDefinitionActivityProvider(IWorkflowDefinitionStore store, 
                 activity.LatestAvailablePublishedVersionId = latestPublishedVersion?.Id;
 
                 return activity;
-            },
-            ConfigureSerializerOptions = options =>
-            {
-                options.Converters.Add(new JsonIgnoreCompositeRootConverterFactory(activityWriter));
-                return options;
             }
         };
     }

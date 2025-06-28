@@ -40,6 +40,11 @@ public class ActivityExecutionContextState
     /// A bag of properties.
     /// </summary>
     public IDictionary<string, object> Properties { get; set; } = new Dictionary<string, object>();
+    
+    /// <summary>
+    /// A bag of metadata.
+    /// </summary>
+    public IDictionary<string, object> Metadata { get; set; } = new Dictionary<string, object>();
 
     /// <summary>
     /// The evaluated values of the activity's properties.
@@ -55,6 +60,16 @@ public class ActivityExecutionContextState
     /// The status of the activity.
     /// </summary>
     public ActivityStatus Status { get; set; }
+    
+    /// <summary>
+    /// Gets or sets a value indicating whether the activity is actively executing. 
+    /// </summary>
+    public bool IsExecuting { get; set; }
+
+    /// <summary>
+    /// The number of faults recorded by this activity for itself and descendants.
+    /// </summary>
+    public int FaultCount { get; set; }
 
     /// <summary>
     /// The time at which the activity execution began.

@@ -1,5 +1,5 @@
 using Elsa.Extensions;
-using Elsa.JavaScript.Activities;
+using Elsa.Expressions.JavaScript.Activities;
 
 namespace Elsa.Workflows.ComponentTests.Scenarios.JavaScriptVariables;
 
@@ -11,6 +11,6 @@ public class JavaScriptVariablesWorkflow2 : WorkflowBase
     {
         builder.WithDefinitionId(DefinitionId);
         builder.WithVariable("MagicNumber", 3).WithWorkflowStorage();
-        builder.Root = new RunJavaScript("variables.MagicNumber = 42", default, default);
+        builder.Root = new RunJavaScript("variables.MagicNumber = 42", null, null);
     }
 }

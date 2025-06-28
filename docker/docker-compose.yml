@@ -12,8 +12,18 @@
     ports:
       - "5432:5432"
         
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      - ACCEPT_EULA=Y
+      - MSSQL_SA_PASSWORD=!Elsa2025@
+    ports:
+      - 1433:1433
+    volumes:
+      - sqlserver_data:/var/opt/mssql
+        
   mysql:
-    image: mysql:9.1.0
+    image: mysql:8.0
     container_name: mysql
     environment:
       MYSQL_ROOT_PASSWORD: password
@@ -23,7 +33,19 @@
     ports:
       - "3306:3306"
     volumes:
-      - mysql_data:/var/lib/mysql
+      - mysql_data2:/var/lib/mysql
+        
+  oracle:
+      image: container-registry.oracle.com/database/free:latest
+      container_name: oracle-db
+      environment:
+        ORACLE_PWD: elsa
+      ports:
+        - "1521:1521"
+        - "5500:5500"
+      volumes:
+        - ./data/oracle-data:/opt/oracle/oradata
+        - ./setup/oracle-setup:/opt/oracle/scripts/setup
   
   mongodb:
     image: mongo:latest
@@ -44,7 +66,7 @@
       - COCKROACH_DATABASE=elsa
   
   rabbitmq:
-    image: "rabbitmq:3-management"
+    image: "rabbitmq:4-management"
     ports:
       - "15672:15672"
       - "5672:5672"
@@ -72,6 +94,37 @@
     environment:
       - PlantUml__RemoteUrl=
       - ConnectionStrings__DefaultConnection=USER ID=tracelens;PASSWORD=tracelenspass;HOST=postgres;PORT=5432;DATABASE=tracelens;POOLING=true;
+        
+  smtp4dev: # Mock SMTP server
+    image: rnwood/smtp4dev
+    container_name: smtp4dev
+    restart: always
+    ports:
+      - "3000:80"    # Web interface
+      - "2525:25"    # SMTP port
+    environment:
+      - ASPNETCORE_URLS=http://+:80
+      - Logging__LogLevel__Default=Information
+        
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite
+    container_name: azurite
+    command: >
+      azurite
+      --blobHost 0.0.0.0 --blobPort 10010
+      --queueHost 0.0.0.0 --queuePort 10011
+      --tableHost 0.0.0.0 --tablePort 10012
+      --location /data
+      --debug /data/debug.log
+      --skipApiVersionCheck
+      --loose
+    ports:
+      - "10010:10010"  # Blob service
+      - "10011:10011"  # Queue service
+      - "10012:10012"  # Table service
+    volumes:
+      - ./azurite-data:/data
+    restart: always
 
   elsa-server:
     build:
@@ -103,7 +156,9 @@
       - "14000:8080"
 
 volumes:
+  sqlserver_data:
   postgres-data:
-  mysql_data:
+  oracle-data-free1:
+  mysql_data2:
   cockroachdb-data:
   mongodb_data:

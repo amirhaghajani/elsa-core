@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text.Json;
+using Elsa.Common;
 using Elsa.Expressions.Contracts;
 using Elsa.Expressions.Helpers;
 using Elsa.Expressions.Models;
@@ -10,6 +11,7 @@ using Elsa.Workflows.Memory;
 using Elsa.Workflows.Models;
 using Elsa.Workflows.Notifications;
 using Elsa.Workflows.Signals;
+using Elsa.Workflows.State;
 using JetBrains.Annotations;
 using Microsoft.Extensions.Logging;
 
@@ -25,13 +27,13 @@ public static partial class ActivityExecutionContextExtensions
     /// <summary>
     /// Attempts to get a value from the input provided via <see cref="WorkflowExecutionContext"/>. If a value was found, an attempt is made to convert it into the specified type <code>T</code>.
     /// </summary>
-    public static bool TryGetWorkflowInput<T>(this ActivityExecutionContext context, string key, out T value, JsonSerializerOptions? serializerOptions = default)
+    public static bool TryGetWorkflowInput<T>(this ActivityExecutionContext context, string key, out T value, JsonSerializerOptions? serializerOptions = null)
     {
         var wellKnownTypeRegistry = context.GetRequiredService<IWellKnownTypeRegistry>();
 
         if (context.WorkflowInput.TryGetValue(key, out var v))
         {
-            value = v.ConvertTo<T>(new ObjectConverterOptions(serializerOptions, wellKnownTypeRegistry))!;
+            value = v.ConvertTo<T>(new(serializerOptions, wellKnownTypeRegistry))!;
             return true;
         }
 
@@ -42,15 +44,15 @@ public static partial class ActivityExecutionContextExtensions
     /// <summary>
     /// Gets a value from the input provided via <see cref="WorkflowExecutionContext"/>. If a value was found, an attempt is made to convert it into the specified type <code>T</code>.
     /// </summary>
-    public static T GetWorkflowInput<T>(this ActivityExecutionContext context, JsonSerializerOptions? serializerOptions = default) => context.GetWorkflowInput<T>(typeof(T).Name, serializerOptions);
+    public static T GetWorkflowInput<T>(this ActivityExecutionContext context, JsonSerializerOptions? serializerOptions = null) => context.GetWorkflowInput<T>(typeof(T).Name, serializerOptions);
 
     /// <summary>
     /// Gets a value from the input provided via <see cref="WorkflowExecutionContext"/>. If a value was found, an attempt is made to convert it into the specified type <code>T</code>.
     /// </summary>
-    public static T GetWorkflowInput<T>(this ActivityExecutionContext context, string key, JsonSerializerOptions? serializerOptions = default)
+    public static T GetWorkflowInput<T>(this ActivityExecutionContext context, string key, JsonSerializerOptions? serializerOptions = null)
     {
         var wellKnownTypeRegistry = context.GetRequiredService<IWellKnownTypeRegistry>();
-        return context.WorkflowInput[key].ConvertTo<T>(new ObjectConverterOptions(serializerOptions, wellKnownTypeRegistry))!;
+        return context.WorkflowInput[key].ConvertTo<T>(new(serializerOptions, wellKnownTypeRegistry))!;
     }
 
     /// <summary>
@@ -61,7 +63,7 @@ public static partial class ActivityExecutionContextExtensions
     /// <exception cref="Exception">Thrown when the specified activity does not implement <see cref="IActivityWithResult"/>.</exception>
     public static void SetResult(this ActivityExecutionContext context, object? value)
     {
-        var activity = context.Activity as IActivityWithResult ?? throw new Exception($"Cannot set result on activity {context.Activity.Id} because it does not implement {nameof(IActivityWithResult)}.");
+        var activity = context.Activity as IActivityWithResult ?? throw new($"Cannot set result on activity {context.Activity.Id} because it does not implement {nameof(IActivityWithResult)}.");
         context.Set(activity.Result, value, "Result");
     }
 
@@ -79,8 +81,10 @@ public static partial class ActivityExecutionContextExtensions
     /// <param name="storageDriverType">The type of storage driver to use for the variable.</param>
     /// <param name="configure">A callback to configure the memory block.</param>
     /// <returns>The created <see cref="Variable"/>.</returns>
-    public static Variable CreateVariable(this ActivityExecutionContext context, string name, object? value, Type? storageDriverType = default, Action<MemoryBlock>? configure = default) =>
-        context.ExpressionExecutionContext.CreateVariable(name, value, storageDriverType, configure);
+    public static Variable CreateVariable(this ActivityExecutionContext context, string name, object? value, Type? storageDriverType = null, Action<MemoryBlock>? configure = null)
+    {
+        return context.ExpressionExecutionContext.CreateVariable(name, value, storageDriverType, configure);
+    }
 
     /// <summary>
     /// Sets a workflow variable by name.
@@ -90,8 +94,33 @@ public static partial class ActivityExecutionContextExtensions
     /// <param name="value">The value of the variable.</param>
     /// <param name="configure">A callback to configure the memory block.</param>
     /// <returns>The created <see cref="Variable"/>.</returns>
-    public static Variable SetVariable(this ActivityExecutionContext context, string name, object? value, Action<MemoryBlock>? configure = default) =>
+    public static Variable SetVariable(this ActivityExecutionContext context, string name, object? value, Action<MemoryBlock>? configure = null) =>
         context.ExpressionExecutionContext.SetVariable(name, value, configure);
+
+    public static Variable SetDynamicVariable<T>(this ActivityExecutionContext context, string name, T value, Action<MemoryBlock>? configure = null)
+    {
+        // Check if a predefined variable already exists.
+        var predefinedVariable = context.ExpressionExecutionContext.GetVariable(name);
+
+        if (predefinedVariable != null)
+        {
+            context.SetVariable(name, value);
+            return predefinedVariable;
+        }
+
+        // No predefined variable exists, so we will add a dynamic variable to the current container in scope.
+        var container = context.FindParentWithVariableContainer();
+
+        if (container == null)
+            throw new("No parent variable container found");
+
+        var existingVariable = container.DynamicVariables.FirstOrDefault(x => x.Name == name);
+
+        if (existingVariable == null)
+            container.DynamicVariables.Add(new Variable<T>(name, value));
+
+        return context.SetVariable(name, value);
+    }
 
     /// <summary>
     /// Gets a workflow variable by name.
@@ -140,7 +169,7 @@ public static partial class ActivityExecutionContextExtensions
         {
             var activity = node.Activity;
             var activityDescriptor = await activityRegistryLookup.FindAsync(activity.Type, activity.Version);
-            if (activityDescriptor != null && activityDescriptor.Outputs.Any()) 
+            if (activityDescriptor != null && activityDescriptor.Outputs.Any())
                 yield return (activity, activityDescriptor);
         }
     }
@@ -184,69 +213,14 @@ public static partial class ActivityExecutionContextExtensions
     }
 
     /// <summary>
-    /// Returns a flattened list of the current context's ancestors.
-    /// </summary>
-    public static IEnumerable<ActivityExecutionContext> GetAncestors(this ActivityExecutionContext context)
-    {
-        var current = context.ParentActivityExecutionContext;
-
-        while (current != null)
-        {
-            yield return current;
-            current = current.ParentActivityExecutionContext;
-        }
-    }
-
-    /// <summary>
-    /// Returns a flattened list of the current context's descendants.
-    /// </summary>
-    public static IEnumerable<ActivityExecutionContext> GetDescendents(this ActivityExecutionContext context)
-    {
-        var children = context.WorkflowExecutionContext.ActivityExecutionContexts.Where(x => x.ParentActivityExecutionContext == context).ToList();
-
-        foreach (var child in children)
-        {
-            yield return child;
-
-            foreach (var descendent in GetDescendents(child))
-                yield return descendent;
-        }
-    }
-
-    /// <summary>
-    /// Returns a flattened list of the current context's immediate active children.
-    /// </summary>
-    public static IEnumerable<ActivityExecutionContext> GetActiveChildren(this ActivityExecutionContext context) =>
-        context.WorkflowExecutionContext.ActivityExecutionContexts.Where(x => x.ParentActivityExecutionContext == context);
-
-    /// <summary>
-    /// Returns a flattened list of the current context's immediate children.
-    /// </summary>
-    public static IEnumerable<ActivityExecutionContext> GetChildren(this ActivityExecutionContext context) =>
-        context.WorkflowExecutionContext.ActivityExecutionContexts.Where(x => x.ParentActivityExecutionContext == context);
-
-    /// <summary>
-    /// Returns a flattened list of the current context's descendants.
-    /// </summary>
-    public static IEnumerable<ActivityExecutionContext> GetDescendants(this ActivityExecutionContext context)
-    {
-        var children = context.WorkflowExecutionContext.ActivityExecutionContexts.Where(x => x.ParentActivityExecutionContext == context).ToList();
-
-        foreach (var child in children)
-        {
-            yield return child;
-
-            foreach (var descendant in child.GetDescendants())
-                yield return descendant;
-        }
-    }
-
-    /// <summary>
     /// Send a signal up the current hierarchy of ancestors.
     /// </summary>
     public static async ValueTask SendSignalAsync(this ActivityExecutionContext context, object signal)
     {
-        var receivingContexts = new[] { context }.Concat(context.GetAncestors()).ToList();
+        var receivingContexts = new[]
+        {
+            context
+        }.Concat(context.GetAncestors()).ToList();
         var logger = context.GetRequiredService<ILogger<ActivityExecutionContext>>();
         var signalType = signal.GetType();
         var signalTypeName = signalType.Name;
@@ -301,7 +275,7 @@ public static partial class ActivityExecutionContextExtensions
         // Send a signal.
         await context.SendSignalAsync(new ScheduleActivityOutcomes(outcomes));
     }
-    
+
     /// <summary>
     /// Cancel the activity. For blocking activities, it means their bookmarks will be removed. For job activities, the background work will be cancelled.
     /// </summary>
@@ -312,7 +286,7 @@ public static partial class ActivityExecutionContextExtensions
             return;
 
         // Select all child contexts.
-        var childContexts = context.WorkflowExecutionContext.ActivityExecutionContexts.Where(x => x.ParentActivityExecutionContext == context).ToList();
+        var childContexts = context.Children.ToList();
 
         foreach (var childContext in childContexts)
             await CancelActivityAsync(childContext);
@@ -324,10 +298,51 @@ public static partial class ActivityExecutionContextExtensions
         context.WorkflowExecutionContext.Bookmarks.RemoveWhere(x => x.ActivityNodeId == context.NodeId);
 
         // Add an execution log entry.
-        context.AddExecutionLogEntry("Canceled", payload: context.JournalData);
+        context.AddExecutionLogEntry("Canceled");
 
         await context.SendSignalAsync(new CancelSignal());
         await publisher.SendAsync(new ActivityCancelled(context));
+    }
+
+    /// <summary>
+    /// Marks the current activity as faulted, records an exception, and transitions its status to <see cref="ActivityStatus.Faulted"/>.
+    /// An incident is logged, and the fault count for the activity and its ancestor activities is incremented.
+    /// </summary>
+    /// <param name="context">The <see cref="ActivityExecutionContext"/> representing the execution context of the current activity.</param>
+    /// <param name="e">The exception to be recorded as the cause of the fault.</param>
+    public static void Fault(this ActivityExecutionContext context, Exception e)
+    {
+        context.Exception = e;
+        context.TransitionTo(ActivityStatus.Faulted);
+        var activity = context.Activity;
+        var exceptionState = ExceptionState.FromException(e);
+        var systemClock = context.GetRequiredService<ISystemClock>();
+        var now = systemClock.UtcNow;
+        var incident = new ActivityIncident(activity.Id, activity.NodeId, activity.Type, e.Message, exceptionState, now);
+        context.WorkflowExecutionContext.Incidents.Add(incident);
+        context.AggregateFaultCount++;
+        
+        var ancestors = context.GetAncestors();
+
+        foreach (var ancestor in ancestors)
+            ancestor.AggregateFaultCount++;
+
+        context.TransitionTo(ActivityStatus.Faulted);
+    }
+
+    /// <summary>
+    /// Recovers the current activity from a faulted state by resetting fault counts and transitioning the activity to the running status.
+    /// </summary>
+    public static void RecoverFromFault(this ActivityExecutionContext context)
+    {
+        context.AggregateFaultCount = 0;
+
+        var ancestors = context.GetAncestors();
+
+        foreach (var ancestor in ancestors)
+            ancestor.AggregateFaultCount--;
+
+        context.TransitionTo(ActivityStatus.Running);
     }
 
     /// <summary>
@@ -357,6 +372,68 @@ public static partial class ActivityExecutionContextExtensions
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Returns a flattened list of the current context's ancestors.
+    /// </summary>
+    public static IEnumerable<ActivityExecutionContext> GetAncestors(this ActivityExecutionContext context)
+    {
+        var current = context.ParentActivityExecutionContext;
+
+        while (current != null)
+        {
+            yield return current;
+            current = current.ParentActivityExecutionContext;
+        }
+    }
+
+    /// <summary>
+    /// Returns a flattened list of the current context's descendants.
+    /// </summary>
+    public static IEnumerable<ActivityExecutionContext> GetDescendents(this ActivityExecutionContext context)
+    {
+        var children = context.Children.ToList();
+
+        foreach (var child in children)
+        {
+            yield return child;
+
+            foreach (var descendent in GetDescendents(child))
+                yield return descendent;
+        }
+    }
+
+    /// <summary>
+    /// Returns a flattened list of the current context's immediate active children.
+    /// </summary>
+    public static IEnumerable<ActivityExecutionContext> GetActiveChildren(this ActivityExecutionContext context)
+    {
+        return context.Children;
+    }
+
+    /// <summary>
+    /// Returns a flattened list of the current context's immediate children.
+    /// </summary>
+    public static IEnumerable<ActivityExecutionContext> GetChildren(this ActivityExecutionContext context)
+    {
+        return context.Children;
+    }
+
+    /// <summary>
+    /// Returns a flattened list of the current context's descendants.
+    /// </summary>
+    public static IEnumerable<ActivityExecutionContext> GetDescendants(this ActivityExecutionContext context)
+    {
+        var children = context.Children.ToList();
+
+        foreach (var child in children)
+        {
+            yield return child;
+
+            foreach (var descendant in child.GetDescendants())
+                yield return descendant;
+        }
     }
 
     internal static bool GetHasEvaluatedProperties(this ActivityExecutionContext context) => context.TransientProperties.TryGetValue<bool>("HasEvaluatedProperties", out var value) && value;

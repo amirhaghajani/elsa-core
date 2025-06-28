@@ -1,7 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
-using System.Text.Json.Serialization;
-using System.Text.Json.Serialization.Metadata;
 using Elsa.Common.Serialization;
 using Elsa.Expressions.Contracts;
 using Elsa.Workflows.Serialization.Converters;
@@ -22,7 +20,8 @@ public class JsonWorkflowStateSerializer : ConfigurableSerializer, IWorkflowStat
     /// <summary>
     /// Initializes a new instance of the <see cref="JsonWorkflowStateSerializer"/> class.
     /// </summary>
-    public JsonWorkflowStateSerializer(IServiceProvider serviceProvider, IWellKnownTypeRegistry wellKnownTypeRegistry, ILoggerFactory loggerFactory) : base(serviceProvider)
+    public JsonWorkflowStateSerializer(IServiceProvider serviceProvider, IWellKnownTypeRegistry wellKnownTypeRegistry, ILoggerFactory loggerFactory)
+        : base(serviceProvider)
     {
         _wellKnownTypeRegistry = wellKnownTypeRegistry;
         _loggerFactory = loggerFactory;
@@ -129,29 +128,16 @@ public class JsonWorkflowStateSerializer : ConfigurableSerializer, IWorkflowStat
     /// <inheritdoc />
     public override JsonSerializerOptions GetOptions()
     {
-        // Bypass cached options to ensure that the reference handler is always fresh.
-        return GetOptionsInternal();
-    }
-
-    /// <inheritdoc />
-    protected override void Configure(JsonSerializerOptions options)
-    {
-        var referenceHandler = new CrossScopedReferenceHandler();
-
-        options.ReferenceHandler = referenceHandler;
-        options.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
-        options.PropertyNameCaseInsensitive = true;
-        options.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
+        var options = base.GetOptions();
+        return new(options) { ReferenceHandler = new CrossScopedReferenceHandler() };
     }
 
     /// <inheritdoc />
     protected override void AddConverters(JsonSerializerOptions options)
     {
-        options.Converters.Add(new JsonStringEnumConverter());
         options.Converters.Add(new TypeJsonConverter(_wellKnownTypeRegistry));
-        options.Converters.Add(JsonMetadataServices.TimeSpanConverter);
         options.Converters.Add(new PolymorphicObjectConverterFactory(_wellKnownTypeRegistry));
-        options.Converters.Add(new TypeJsonConverter(_wellKnownTypeRegistry));
         options.Converters.Add(new VariableConverterFactory(_wellKnownTypeRegistry, _loggerFactory));
+        options.Converters.Add(new FuncExpressionValueConverter());
     }
 }

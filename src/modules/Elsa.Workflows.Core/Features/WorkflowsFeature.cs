@@ -1,7 +1,6 @@
 using Elsa.Common;
 using Elsa.Common.Features;
 using Elsa.Common.Serialization;
-using Elsa.CSharp.Activities;
 using Elsa.Expressions.Features;
 using Elsa.Extensions;
 using Elsa.Features.Abstractions;
@@ -9,6 +8,7 @@ using Elsa.Features.Attributes;
 using Elsa.Features.Services;
 using Elsa.Workflows.ActivationValidators;
 using Elsa.Workflows.Builders;
+using Elsa.Workflows.CommitStates;
 using Elsa.Workflows.IncidentStrategies;
 using Elsa.Workflows.LogPersistence;
 using Elsa.Workflows.LogPersistence.Strategies;
@@ -24,6 +24,7 @@ using Elsa.Workflows.Services;
 using Elsa.Workflows.UIHints.CheckList;
 using Elsa.Workflows.UIHints.Dropdown;
 using Elsa.Workflows.UIHints.JsonEditor;
+using Elsa.Workflows.UIHints.RadioList;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Elsa.Workflows.Features;
@@ -36,33 +37,34 @@ namespace Elsa.Workflows.Features;
 [DependsOn(typeof(MediatorFeature))]
 [DependsOn(typeof(DefaultFormattersFeature))]
 [DependsOn(typeof(MultitenancyFeature))]
+[DependsOn(typeof(CommitStrategiesFeature))]
 public class WorkflowsFeature : FeatureBase
 {
     /// <inheritdoc />
     public WorkflowsFeature(IModule module) : base(module)
     {
     }
-    
+
     /// <summary>
     /// A factory that instantiates a concrete <see cref="IStandardInStreamProvider"/>.
     /// </summary>
     public Func<IServiceProvider, IStandardInStreamProvider> StandardInStreamProvider { get; set; } = _ => new StandardInStreamProvider(Console.In);
-    
+
     /// <summary>
     /// A factory that instantiates a concrete <see cref="IStandardOutStreamProvider"/>.
     /// </summary>
     public Func<IServiceProvider, IStandardOutStreamProvider> StandardOutStreamProvider { get; set; } = _ => new StandardOutStreamProvider(Console.Out);
-    
+
     /// <summary>
     /// A factory that instantiates a concrete <see cref="IIdentityGenerator"/>.
     /// </summary>
     public Func<IServiceProvider, IIdentityGenerator> IdentityGenerator { get; set; } = sp => new RandomLongIdentityGenerator();
-    
+
     /// <summary>
     /// A handler for committing workflow execution state.
     /// </summary>
     public Func<IServiceProvider, ICommitStateHandler> CommitStateHandler { get; set; } = sp => new NoopCommitStateHandler();
-    
+
     /// <summary>
     /// A factory that instantiates a concrete <see cref="ILoggerStateGenerator{WorkflowExecutionContext}"/>.
     /// </summary>
@@ -79,7 +81,7 @@ public class WorkflowsFeature : FeatureBase
     public Action<IWorkflowExecutionPipelineBuilder> WorkflowExecutionPipeline { get; set; } = builder => builder
         .UseExceptionHandling()
         .UseDefaultActivityScheduler();
-    
+
     /// <summary>
     /// A delegate to configure the <see cref="IActivityExecutionPipeline"/>.
     /// </summary>
@@ -93,7 +95,7 @@ public class WorkflowsFeature : FeatureBase
         StandardInStreamProvider = provider;
         return this;
     }
-    
+
     /// <summary>
     /// Fluent method to set <see cref="StandardOutStreamProvider"/>.
     /// </summary>
@@ -229,10 +231,12 @@ public class WorkflowsFeature : FeatureBase
             // UI hints.
             .AddScoped<IUIHintHandler, DropDownUIHintHandler>()
             .AddScoped<IUIHintHandler, CheckListUIHintHandler>()
+            .AddScoped<IUIHintHandler, RadioListUIHintHandler>()
             .AddScoped<IUIHintHandler, JsonEditorUIHintHandler>()
 
             // UI property handlers.
             .AddScoped<IPropertyUIHandler, StaticCheckListOptionsProvider>()
+            .AddScoped<IPropertyUIHandler, StaticRadioListOptionsProvider>()
             .AddScoped<IPropertyUIHandler, StaticDropDownOptionsProvider>()
             .AddScoped<IPropertyUIHandler, JsonCodeOptionsProvider>()
 

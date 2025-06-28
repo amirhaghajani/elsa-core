@@ -1,6 +1,7 @@
 using System.ComponentModel.DataAnnotations;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Elsa.Expressions.Helpers;
 using Elsa.Extensions;
 using JetBrains.Annotations;
 
@@ -11,14 +12,17 @@ namespace Elsa.Workflows;
 /// </summary>
 [Display(Name = "Workflow Instance")]
 [UsedImplicitly]
-public class WorkflowInstanceStorageDriver : IStorageDriver
+public class WorkflowInstanceStorageDriver(IPayloadSerializer payloadSerializer) : IStorageDriver
 {
     /// <summary>
     /// The key used to store the variables in the workflow state.
     /// </summary>
     public const string VariablesDictionaryStateKey = "Variables";
-
+    
+    /// <inheritdoc />
     public double Priority => 5;
+    /// <inheritdoc />
+    public IEnumerable<string> Tags => [];
 
     /// <inheritdoc />
     public ValueTask WriteAsync(string id, object value, StorageDriverContext context)
@@ -36,7 +40,16 @@ public class WorkflowInstanceStorageDriver : IStorageDriver
     {
         var dictionary = GetVariablesDictionary(context);
         var node = dictionary.GetValueOrDefault(id);
-        return new(node);
+        var variable = context.Variable;
+        var variableType = variable.GetVariableType();
+        var options = new ObjectConverterOptions
+        {
+            DeserializeJsonObjectToObject = true,
+            SerializerOptions = payloadSerializer.GetOptions()  
+        };
+        var result = node.TryConvertTo(variableType, options);
+        var parsedValue = result.Success ? result.Value : node;
+        return new (parsedValue);
     }
 
     /// <inheritdoc />

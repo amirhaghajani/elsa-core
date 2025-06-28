@@ -15,14 +15,15 @@
 
     <ItemGroup>
         <PackageReference Include="Cronos" />
-        <PackageReference Include="DistributedLock.Core" />
+        <PackageReference Include="IronCompress" />
         <PackageReference Include="LinqKit.Core" />
+        <PackageReference Include="DistributedLock" />
         <PackageReference Include="Microsoft.Extensions.Configuration" />
         <PackageReference Include="Microsoft.Extensions.Configuration.Json" />
     </ItemGroup>
 
-    <ItemGroup Condition="'$(TargetFramework)' == 'net6.0'">
-        <PackageReference Include="System.Text.Json" />
+    <ItemGroup>
+      <Folder Include="DistributedHosting\" />
     </ItemGroup>
 
 </Project>

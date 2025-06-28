@@ -54,13 +54,14 @@ public class BookmarkQueueItem : Entity
     /// </summary>
     public BookmarkFilter CreateBookmarkFilter()
     {
-        return new BookmarkFilter
+        return new()
         {
             WorkflowInstanceId = WorkflowInstanceId,
             CorrelationId = CorrelationId,
             BookmarkId = BookmarkId,
             Hash = StimulusHash,
-            ActivityInstanceId = ActivityInstanceId
+            ActivityInstanceId = ActivityInstanceId,
+            Name =  ActivityTypeName
         };
     }
 }

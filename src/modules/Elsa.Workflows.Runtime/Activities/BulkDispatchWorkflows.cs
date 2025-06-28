@@ -30,7 +30,7 @@ public class BulkDispatchWorkflows : Activity
     private const string CompletedInstancesCountKey = nameof(CompletedInstancesCountKey);
 
     /// <inheritdoc />
-    public BulkDispatchWorkflows([CallerFilePath] string? source = default, [CallerLineNumber] int? line = default) : base(source, line)
+    public BulkDispatchWorkflows([CallerFilePath] string? source = null, [CallerLineNumber] int? line = null) : base(source, line)
     {
     }
 
@@ -42,13 +42,13 @@ public class BulkDispatchWorkflows : Activity
         Description = "The definition ID of the workflows to dispatch.",
         UIHint = InputUIHints.WorkflowDefinitionPicker
     )]
-    public Input<string> WorkflowDefinitionId { get; set; } = default!;
+    public Input<string> WorkflowDefinitionId { get; set; } = null!;
 
     /// <summary>
     /// The data source to use for dispatching the workflows.
     /// </summary>
     [Input(Description = "The data source to use for dispatching the workflows.")]
-    public Input<object> Items { get; set; } = default!;
+    public Input<object> Items { get; set; } = null!;
 
     /// <summary>
     /// The default key to use for the item input. Will not be used if the Items contain a list of dictionaries.
@@ -69,7 +69,7 @@ public class BulkDispatchWorkflows : Activity
     /// The input to send to the workflows.
     /// </summary>
     [Input(Description = "Additional input to send to the workflows being dispatched.")]
-    public Input<IDictionary<string, object>?> Input { get; set; } = default!;
+    public Input<IDictionary<string, object>?> Input { get; set; } = null!;
 
     /// <summary>
     /// True to wait for the child workflow to complete before completing this activity, false to "fire and forget".
@@ -80,6 +80,12 @@ public class BulkDispatchWorkflows : Activity
     public Input<bool> WaitForCompletion { get; set; } = new(true);
 
     /// <summary>
+    /// Indicates whether a new trace context should be started for the workflow execution.
+    /// </summary>
+    [Input(Description = "Start a new trace context when using Open Telemetry.", Category = "Open Telemetry")]
+    public Input<bool> StartNewTrace { get; set; } = new(false);
+
+    /// <summary>
     /// The channel to dispatch the workflow to.
     /// </summary>
     [Input(
@@ -88,7 +94,7 @@ public class BulkDispatchWorkflows : Activity
         UIHint = InputUIHints.DropDown,
         UIHandler = typeof(DispatcherChannelOptionsProvider)
     )]
-    public Input<string?> ChannelName { get; set; } = default!;
+    public Input<string?> ChannelName { get; set; } = null!;
 
     /// <summary>
     /// An activity to execute when the child workflow finishes.
@@ -104,19 +110,19 @@ public class BulkDispatchWorkflows : Activity
     protected override async ValueTask ExecuteAsync(ActivityExecutionContext context)
     {
         var waitForCompletion = WaitForCompletion.GetOrDefault(context);
-        var items = context.GetItemSource<object>(Items);
-        var dispatchedInstancesCount = 0;
+        var startNewTrace = StartNewTrace.GetOrDefault(context);
+        var items = await context.GetItemSource<object>(Items).ToListAsync(context.CancellationToken);
+        var count = items.Count;
 
-        await foreach (var item in items)
-        {
-            await DispatchChildWorkflowAsync(context, item);
-            dispatchedInstancesCount++;
-        }
+        // Dispatch the child workflows.
+        foreach (var item in items)
+            await DispatchChildWorkflowAsync(context, item, waitForCompletion, startNewTrace);
 
-        context.SetProperty(DispatchedInstancesCountKey, dispatchedInstancesCount);
+        // Store the number of dispatched instances for tracking.
+        context.SetProperty(DispatchedInstancesCountKey, count);
 
         // If we need to wait for the child workflows to complete (if any), create a bookmark.
-        if (waitForCompletion && dispatchedInstancesCount > 0)
+        if (waitForCompletion && count > 0)
         {
             var workflowInstanceId = context.WorkflowExecutionContext.Id;
             var bookmarkOptions = new CreateBookmarkArgs
@@ -125,11 +131,12 @@ public class BulkDispatchWorkflows : Activity
                 Stimulus = new BulkDispatchWorkflowsStimulus(workflowInstanceId)
                 {
                     ParentInstanceId = context.WorkflowExecutionContext.Id,
-                    ScheduledInstanceIdsCount = dispatchedInstancesCount
+                    ScheduledInstanceIdsCount = count
                 },
                 IncludeActivityInstanceId = false,
                 AutoBurn = false,
             };
+
             context.CreateBookmark(bookmarkOptions);
         }
         else
@@ -139,9 +146,15 @@ public class BulkDispatchWorkflows : Activity
         }
     }
 
-    private async ValueTask<string> DispatchChildWorkflowAsync(ActivityExecutionContext context, object item)
+    private async ValueTask<string> DispatchChildWorkflowAsync(ActivityExecutionContext context, object item, bool waitForCompletion, bool startNewTrace)
     {
         var workflowDefinitionId = WorkflowDefinitionId.Get(context);
+        var workflowDefinitionService = context.GetRequiredService<IWorkflowDefinitionService>();
+        var workflowGraph = await workflowDefinitionService.FindWorkflowGraphAsync(workflowDefinitionId, VersionOptions.Published);
+
+        if (workflowGraph == null)
+            throw new($"No published version of workflow definition with ID {workflowDefinitionId} found.");
+
         var parentInstanceId = context.WorkflowExecutionContext.Id;
         var input = Input.GetOrDefault(context) ?? new Dictionary<string, object>();
         var channelName = ChannelName.GetOrDefault(context);
@@ -150,6 +163,9 @@ public class BulkDispatchWorkflows : Activity
         {
             ["ParentInstanceId"] = parentInstanceId
         };
+
+        if (waitForCompletion) properties["WaitForCompletion"] = true;
+        if (startNewTrace) properties["StartNewTrace"] = true;
 
         var itemDictionary = new Dictionary<string, object>
         {
@@ -168,12 +184,6 @@ public class BulkDispatchWorkflows : Activity
         var workflowDispatcher = context.GetRequiredService<IWorkflowDispatcher>();
         var identityGenerator = context.GetRequiredService<IIdentityGenerator>();
         var evaluator = context.GetRequiredService<IExpressionEvaluator>();
-        var workflowDefinitionService = context.GetRequiredService<IWorkflowDefinitionService>();
-        var workflowGraph = await workflowDefinitionService.FindWorkflowGraphAsync(workflowDefinitionId, VersionOptions.Published);
-
-        if (workflowGraph == null)
-            throw new Exception($"No published version of workflow definition with ID {workflowDefinitionId} found.");
-
         var correlationId = CorrelationIdFunction != null ? await evaluator.EvaluateAsync<string>(CorrelationIdFunction!, context.ExpressionExecutionContext, evaluatorOptions) : null;
         var instanceId = identityGenerator.GenerateId();
         var request = new DispatchWorkflowDefinitionRequest(workflowGraph.Workflow.Identity.Id)
@@ -228,17 +238,17 @@ public class BulkDispatchWorkflows : Activity
                 await context.ScheduleActivityAsync(ChildCompleted, options);
                 return;
             default:
-                await CheckIfCompletedAsync(context);
+                await AttemptToCompleteAsync(context);
                 break;
         }
     }
 
     private async ValueTask OnChildFinishedCompletedAsync(ActivityCompletedContext context)
     {
-        await CheckIfCompletedAsync(context.TargetContext);
+        await AttemptToCompleteAsync(context.TargetContext);
     }
 
-    private async ValueTask CheckIfCompletedAsync(ActivityExecutionContext context)
+    private async ValueTask AttemptToCompleteAsync(ActivityExecutionContext context)
     {
         var dispatchedInstancesCount = context.GetProperty<long>(DispatchedInstancesCountKey);
         var finishedInstancesCount = context.GetProperty<long>(CompletedInstancesCountKey);

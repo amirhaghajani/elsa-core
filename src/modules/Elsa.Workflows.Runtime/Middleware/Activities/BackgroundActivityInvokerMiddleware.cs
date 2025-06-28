@@ -1,9 +1,12 @@
 using System.Text.Json;
 using Elsa.Extensions;
+using Elsa.Mediator.Contracts;
+using Elsa.Workflows.CommitStates;
 using Elsa.Workflows.Middleware.Activities;
 using Elsa.Workflows.Models;
 using Elsa.Workflows.Options;
 using Elsa.Workflows.Pipelines.ActivityExecution;
+using Elsa.Workflows.Runtime.Notifications;
 using Elsa.Workflows.Runtime.Stimuli;
 using JetBrains.Annotations;
 using Microsoft.Extensions.Logging;
@@ -18,8 +21,10 @@ public class BackgroundActivityInvokerMiddleware(
     ActivityMiddlewareDelegate next,
     ILogger<BackgroundActivityInvokerMiddleware> logger,
     IIdentityGenerator identityGenerator,
-    IBackgroundActivityScheduler backgroundActivityScheduler)
-    : DefaultActivityInvokerMiddleware(next, logger)
+    IBackgroundActivityScheduler backgroundActivityScheduler,
+    ICommitStrategyRegistry commitStrategyRegistry,
+    IMediator mediator)
+    : DefaultActivityInvokerMiddleware(next, commitStrategyRegistry, logger)
 {
     internal static string GetBackgroundActivityOutputKey(string activityNodeId) => $"__BackgroundActivityOutput:{activityNodeId}";
     internal static string GetBackgroundActivityOutcomesKey(string activityNodeId) => $"__BackgroundActivityOutcomes:{activityNodeId}";
@@ -27,6 +32,7 @@ public class BackgroundActivityInvokerMiddleware(
     internal static string GetBackgroundActivityJournalDataKey(string activityNodeId) => $"__BackgroundActivityJournalData:{activityNodeId}";
     internal static string GetBackgroundActivityScheduledActivitiesKey(string activityNodeId) => $"__BackgroundActivityScheduledActivities:{activityNodeId}";
     internal static string GetBackgroundActivityBookmarksKey(string activityNodeId) => $"__BackgroundActivityBookmarks:{activityNodeId}";
+    internal static string GetBackgroundActivityPropertiesKey(string activityNodeId) => $"__BackgroundActivityProperties:{activityNodeId}";
     internal const string BackgroundActivityBookmarkName = "BackgroundActivity";
 
     /// <inheritdoc />
@@ -47,9 +53,11 @@ public class BackgroundActivityInvokerMiddleware(
                 CaptureOutputIfAny(context);
                 CaptureJournalData(context);
                 CaptureBookmarkData(context);
+                CapturePropertiesIfAny(context);
                 await CompleteBackgroundActivityOutcomesAsync(context);
                 await CompleteBackgroundActivityAsync(context);
                 await CompleteBackgroundActivityScheduledActivitiesAsync(context);
+                await mediator.SendAsync(new BackgroundActivityExecutionCompleted(context), context.CancellationToken);
             }
         }
     }
@@ -122,7 +130,7 @@ public class BackgroundActivityInvokerMiddleware(
                 continue;
 
             var output = (Output?)outputDescriptor.ValueGetter(activity);
-            context.Set(output, outputEntry.Value);
+            context.Set(output, outputEntry.Value, outputDescriptor.Name);
         }
     }
 
@@ -152,6 +160,21 @@ public class BackgroundActivityInvokerMiddleware(
         }
 
         context.WorkflowExecutionContext.Properties.Remove(bookmarksKey);
+    }
+    
+    private void CapturePropertiesIfAny(ActivityExecutionContext context)
+    {
+        var activity = context.Activity;
+        var propertiesKey = GetBackgroundActivityPropertiesKey(activity.NodeId);
+        var capturedProperties = context.WorkflowExecutionContext.GetProperty<IDictionary<string, object>>(propertiesKey);
+
+        context.WorkflowExecutionContext.Properties.Remove(propertiesKey);
+
+        if (capturedProperties == null)
+            return;
+
+        foreach (var property in capturedProperties) 
+            context.Properties[property.Key] = property.Value;
     }
 
     private async Task CompleteBackgroundActivityOutcomesAsync(ActivityExecutionContext context)

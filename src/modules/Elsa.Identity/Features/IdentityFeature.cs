@@ -17,7 +17,7 @@ using Microsoft.Extensions.DependencyInjection;
 namespace Elsa.Identity.Features;
 
 /// <summary>
-/// Provides identity feature to authenticate & authorize API requests.
+/// Provides identity feature to authenticate &amp; authorize API requests.
 /// </summary>
 [DependsOn(typeof(SystemClockFeature))]
 [PublicAPI]
@@ -199,6 +199,7 @@ public class IdentityFeature : FeatureBase
             .AddScoped<ISecretGenerator, DefaultSecretGenerator>()
             .AddScoped<IRandomStringGenerator, DefaultRandomStringGenerator>()
             .AddScoped<DefaultApiKeyGeneratorAndParser>()
+            .AddHttpContextAccessor()
             ;
     }
 }

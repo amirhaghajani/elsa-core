@@ -2,7 +2,6 @@ using Elsa.Extensions;
 using Elsa.Http.Bookmarks;
 using Elsa.Http.Contexts;
 using Elsa.Workflows;
-using Elsa.Workflows.Helpers;
 using Elsa.Workflows.Models;
 using Elsa.Workflows.Runtime;
 using Elsa.Workflows.Runtime.Entities;
@@ -21,14 +20,14 @@ public class DefaultRouteTableUpdater(
     /// <inheritdoc />
     public async Task UpdateAsync(CancellationToken cancellationToken = default)
     {
-        var bookmarkName = ActivityTypeNameHelper.GenerateTypeName<HttpEndpoint>();
+        var stimulusName = HttpStimulusNames.HttpEndpoint;
         var triggerFilter = new TriggerFilter
         {
-            Name = bookmarkName
+            Name = stimulusName
         };
         var bookmarkFilter = new BookmarkFilter
         {
-            ActivityTypeName = bookmarkName
+            Name = stimulusName
         };
         var triggers = (await triggerStore.FindManyAsync(triggerFilter, cancellationToken)).ToList();
         var bookmarks = (await bookmarkStore.FindManyAsync(bookmarkFilter, cancellationToken)).ToList();
@@ -93,19 +92,19 @@ public class DefaultRouteTableUpdater(
 
     private static IEnumerable<StoredTrigger> Filter(IEnumerable<StoredTrigger> triggers)
     {
-        var triggerName = ActivityTypeNameHelper.GenerateTypeName<HttpEndpoint>();
-        return triggers.Where(x => x.Name == triggerName && x.Payload != null);
+        var stimulusName = HttpStimulusNames.HttpEndpoint;
+        return triggers.Where(x => x.Name == stimulusName && x.Payload != null);
     }
 
     private static IEnumerable<StoredBookmark> Filter(IEnumerable<StoredBookmark> bookmarks)
     {
-        var activityTypeName = ActivityTypeNameHelper.GenerateTypeName<HttpEndpoint>();
-        return bookmarks.Where(x => x.ActivityTypeName == activityTypeName && x.Payload != null);
+        var stimulusName = HttpStimulusNames.HttpEndpoint;
+        return bookmarks.Where(x => x.Name == stimulusName && x.Payload != null);
     }
 
     private static IEnumerable<Bookmark> Filter(IEnumerable<Bookmark> bookmarks)
     {
-        var bookmarkName = ActivityTypeNameHelper.GenerateTypeName<HttpEndpoint>();
-        return bookmarks.Where(x => x.Name == bookmarkName && x.Payload != null);
+        var stimulusName = HttpStimulusNames.HttpEndpoint;
+        return bookmarks.Where(x => x.Name == stimulusName && x.Payload != null);
     }
 }

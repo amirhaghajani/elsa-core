@@ -26,7 +26,7 @@ public class TestApplicationBuilder
     public TestApplicationBuilder(ITestOutputHelper testOutputHelper)
     {
         _testOutputHelper = testOutputHelper;
-        _services = new ServiceCollection();
+        _services = new();
 
         _services
             .AddSingleton(testOutputHelper)
@@ -39,7 +39,6 @@ public class TestApplicationBuilder
             .UseCSharp()
             .UseJavaScript()
             .UseLiquid()
-            .UseDsl()
             .UseWorkflowManagement()
             .UseWorkflows(workflows => workflows
                 .WithStandardOutStreamProvider(_ => new StandardOutStreamProvider(new XunitConsoleTextWriter(_testOutputHelper)))

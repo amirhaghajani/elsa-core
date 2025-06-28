@@ -43,22 +43,22 @@ internal class Post(
 
         var draft = !string.IsNullOrWhiteSpace(definitionId)
             ? await workflowDefinitionPublisher.GetDraftAsync(definitionId, VersionOptions.Latest, cancellationToken)
-            : default;
+            : null;
 
         var isNew = draft == null;
 
         // Create a new workflow in case no existing definition was found.
         if (isNew)
         {
-            draft = workflowDefinitionPublisher.New();
+            draft = await workflowDefinitionPublisher.NewAsync(cancellationToken: cancellationToken);
 
             if (!string.IsNullOrWhiteSpace(definitionId))
                 draft.DefinitionId = definitionId;
         }
 
-        var authorizationResult = authorizationService.AuthorizeAsync(User, new NotReadOnlyResource(draft), AuthorizationPolicies.NotReadOnlyPolicy);
+        var authorizationResult = await authorizationService.AuthorizeAsync(User, new NotReadOnlyResource(draft), AuthorizationPolicies.NotReadOnlyPolicy);
 
-        if (!authorizationResult.Result.Succeeded)
+        if (!authorizationResult.Succeeded)
         {
             await SendForbiddenAsync(cancellationToken);
             return;
